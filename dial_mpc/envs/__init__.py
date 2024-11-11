@@ -3,6 +3,7 @@ from dial_mpc.envs.unitree_h1_env import (
     UnitreeH1WalkEnvConfig,
     UnitreeH1PushCrateEnvConfig,
 )
+from dial_mpc.envs.bruce_env import BruceWalkEnvConfig
 from dial_mpc.envs.unitree_go2_env import (
     UnitreeGo2EnvConfig,
     UnitreeGo2SeqJumpEnvConfig,
@@ -10,6 +11,7 @@ from dial_mpc.envs.unitree_go2_env import (
 )
 
 _configs = {
+    "bruce_walk": BruceWalkEnvConfig,
     "unitree_h1_walk": UnitreeH1WalkEnvConfig,
     "unitree_h1_push_crate": UnitreeH1PushCrateEnvConfig,
     "unitree_go2_walk": UnitreeGo2EnvConfig,

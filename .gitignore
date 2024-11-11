@@ -13,6 +13,8 @@
 # Precompiled Headers
 *.gch
 *.pch
+unitree_h1_jog/
+bruce_jog/
 
 # Compiled Dynamic libraries
 *.so
