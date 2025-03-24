@@ -129,14 +129,14 @@
         </body>
     </worldbody>
   <!-- !!! ignore hip parts self-collision to make the model stable in mujoco -->
-  <contact>
+  <!-- <contact>
     <exclude body1="hip_pitch_r" body2="hip_yaw_r"/>
     <exclude body1="hip_pitch_l" body2="hip_yaw_l"/>
     <exclude body1="hip_pitch_r" body2="hip_roll_r"/>
     <exclude body1="hip_pitch_l" body2="hip_roll_l"/>
     <exclude body1="hip_yaw_r" body2="hip_roll_r"/>
     <exclude body1="hip_yaw_l" body2="hip_roll_l"/>
-  </contact>
+  </contact> -->
 
     <actuator>
       <motor name="joint_hip_yaw_r_motor" joint="joint_hip_yaw_r" gear="1"/>

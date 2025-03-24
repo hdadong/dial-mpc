@@ -130,12 +130,53 @@ class BruceWalkEnv(BaseEnv):
             ]
         )
         # self.joint_range = self.physical_joint_range
-
+        self._period = 0.55
+        self.roll_yaw = jnp.array([0, 2, 5, 7])
+        print("self.dt", self.dt)
     def make_system(self, config: BruceWalkEnvConfig) -> System:
         model_path = get_model_path("bruce", "scene.xml")
         sys = mjcf.load(model_path)
         sys = sys.tree_replace({"opt.timestep": config.timestep})
         return sys
+
+    def compute_ref_state(self, sin_pos: jnp.ndarray):
+        sin_pos_l = sin_pos.copy()
+        sin_pos_r = sin_pos.copy()
+
+        pdes = jnp.zeros((self.action_size,))
+        
+        # left stand
+        sin_pos_l = jnp.where(sin_pos_l > 0, 0.0, sin_pos_l)
+        sin_pos_r = jnp.where(sin_pos_r < 0, 0.0, sin_pos_r)
+
+        scale_1 = 0.3
+        scale_2 = 0.6
+        scale_3 = 0.3
+        # left stand
+        pdes = pdes.at[1].set(-(sin_pos_l) * scale_1)
+        pdes = pdes.at[3].set(sin_pos_l * scale_2)
+        pdes = pdes.at[4].set(-sin_pos_l * scale_3)
+        
+        # right swing
+        pdes = pdes.at[6].set(sin_pos_r * scale_1)
+        pdes = pdes.at[8].set(-sin_pos_r * scale_2)
+        pdes = pdes.at[9].set(sin_pos_r * scale_3)
+
+        pdes = jnp.where(jnp.abs(sin_pos) < 0.1, 0.0, pdes)
+
+        pdes += self._default_pose
+        contact = self._get_gait_phase(sin_pos)
+
+        return pdes, contact
+
+    def _get_gait_phase(self, sin_curve):
+        # return float mask 1 is stance, 0 is swing
+        stance_mask = jnp.array([sin_curve >= 0, sin_curve < 0])
+
+        # Double support phase
+        stance_mask = jnp.where(jnp.abs(sin_curve) < 0.1, True, stance_mask)
+
+        return stance_mask
 
     def reset(self, rng: jax.Array) -> State:
         rng, key = jax.random.split(rng)
@@ -145,7 +186,7 @@ class BruceWalkEnv(BaseEnv):
         state_info = {
             "rng": rng,
             "pos_tar": jnp.array([0.0, 0.0, 0.49]),
-            "vel_tar": jnp.zeros(3),
+            "vel_tar": jnp.array([0.2, 0.0, 0.0]),
             "ang_vel_tar": jnp.zeros(3),
             "yaw_tar": 0.0,
             "step": 0,
@@ -189,18 +230,21 @@ class BruceWalkEnv(BaseEnv):
         def randomize():
             return self.sample_command(cmd_rng)
 
-        vel_tar, ang_vel_tar = jax.lax.cond(
+        _, _ = jax.lax.cond(
             (state.info["randomize_target"]) & (state.info["step"] % 500 == 0),
             randomize,
             dont_randomize,
         )
-        state.info["vel_tar"] = jnp.minimum(
-            vel_tar * state.info["step"] * self.dt / self._config.ramp_up_time, vel_tar
-        )
-        state.info["ang_vel_tar"] = jnp.minimum(
-            ang_vel_tar * state.info["step"] * self.dt / self._config.ramp_up_time,
-            ang_vel_tar,
-        )
+        vel_tar = state.info["vel_tar"]
+        ang_vel_tar = state.info["ang_vel_tar"]
+
+        # state.info["vel_tar"] = jnp.minimum(
+        #     vel_tar * state.info["step"] * self.dt / self._config.ramp_up_time, vel_tar
+        # )
+        # state.info["ang_vel_tar"] = jnp.minimum(
+        #     ang_vel_tar * state.info["step"] * self.dt / self._config.ramp_up_time,
+        #     ang_vel_tar,
+        # )
 
         # reward
         # gaits reward
@@ -247,7 +291,7 @@ class BruceWalkEnv(BaseEnv):
         d_yaw = yaw - yaw_tar
         reward_yaw = -jnp.square(jnp.atan2(jnp.sin(d_yaw), jnp.cos(d_yaw)))
         # stay to norminal pose reward
-        # reward_pose = -jnp.sum(jnp.square(joint_targets - self._default_pose))
+        reward_pose = -jnp.sum(jnp.square(joint_targets[self.roll_yaw] - self._default_pose[self.roll_yaw]))
         # velocity reward
         vb = global_to_body_velocity(
             xd.vel[self._torso_idx - 1], x.rot[self._torso_idx - 1]
@@ -266,18 +310,47 @@ class BruceWalkEnv(BaseEnv):
         reward_energy = -jnp.sum((ctrl / self.joint_torque_range[:, 1]) ** 2)
         # stay alive reward
         reward_alive = 1.0 - state.done
+
+        t = state.info["step"] * self.dt
+        phase = 2*jnp.pi*t/self._period
+        ref_action, stance_mask = self.compute_ref_state(jnp.sin(phase))
+        joint_pos = joint_targets
+        pos_target = ref_action
+        diff = joint_pos - pos_target
+        norm_diff = jnp.linalg.norm(diff)
+        reward_ref = jnp.exp(-2 * norm_diff) - 0.2 * jnp.clip(norm_diff, 0, 0.5)
+        
+
+        # feet_reward
+        fd, max_df = 0.15, 0.2
+        foot_pos = x.pos[jnp.array([5, 10]), :2]
+        foot_dist = jnp.linalg.norm(foot_pos[:] - foot_pos[:])
+        d_min = jnp.clip(foot_dist - fd, -0.152, 0.0)
+        d_max = jnp.clip(foot_dist - max_df, 0.0, 0.152)
+        reward_feet_distance = (jnp.exp(-jnp.abs(d_min) * 100) + jnp.exp(-jnp.abs(d_max) * 100)) / 2
+
+        # knee reward
+        knee_pos = x.pos[jnp.array([4, 9]), :2]
+        knee_dist = jnp.linalg.norm(knee_pos[0, :] - knee_pos[1, :])
+        d_min = jnp.clip(knee_dist - fd, -0.152, 0.0)
+        d_max = jnp.clip(knee_dist - max_df, 0.0, 0.152)
+        reward_knee_distance = (jnp.exp(-jnp.abs(d_min) * 100) + jnp.exp(-jnp.abs(d_max) * 100)) / 2
+        
         # reward
         reward = (
             #reward_gaits * 5.0
-            + reward_air_time * 0.0
-            + reward_pos * 0.0
+            #+ reward_feet_distance * 0.5
+            #+ reward_knee_distance * 0.1
+            + reward_ref * 1.0
+            #+ reward_air_time * 1.0
+            #+ reward_pos * 0.0
             + reward_upright * 0.5
            # + reward_yaw * 0.1
-            # + reward_pose * 0.0
-            #+ reward_vel * 1.0
-            #+ reward_ang_vel * 1.0
+            # + reward_pose * 0.5
+           # + reward_vel * 0.5
+           # + reward_ang_vel * 1.0
             + reward_height * 0.5
-           # + reward_energy * 0.01
+            + reward_energy * 0.01
             + reward_alive * 0.0
         )
 

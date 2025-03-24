@@ -260,6 +260,7 @@ def main():
         for t in pbar:
             # forward single step
             state = step_env(state, Y0[0])
+            #print(state.pipeline_state.contact)
             rollout.append(state.pipeline_state)
             rews.append(state.reward)
             us.append(Y0[0])
